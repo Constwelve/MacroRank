@@ -1,0 +1,1 @@
+python main.py --model HGNN  --dataset PlainClusterSet --batch_size 8 --device cuda:0 --label 3 --lr 0.001 --trains mgc_des_perf_a mgc_fft_a mgc_matrix_mult_a mgc_matrix_mult_c mgc_superblue14 mgc_superblue19 --tests mgc_edit_dist_a mgc_fft_b mgc_matrix_mult_b mgc_pci_bridge32_b mgc_superblue11_a mgc_superblue16_a
