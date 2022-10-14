@@ -177,25 +177,19 @@ def build_cg_index(macro_pos,size):
 
 def MergeSort(data):
     n=len(data)
-    #递归基
     if n==1:return data, 0
-    #分两半来排序
     part1,part2=data[:n//2],data[n//2:]
     sorted_part1,s1=MergeSort(part1)
     sorted_part2,s2=MergeSort(part2)
-    #排序后拼接这两半，拼接后先计数，然后将两个有序序列合并
     s,sorted_temp=0,sorted_part1+sorted_part2
-    #用p、q两个指针指向两段，计算q中每个元素离插入点的index差
     p,q,len1,len_all=0,sorted_temp.index(sorted_part2[0]),len(sorted_part1),len(sorted_temp)
     while p<len1 and q<len_all:
-        #移动p使p成为插入排序的插入点，计算要移动多少个位置
         while p<len1:
             if sorted_temp[q]<sorted_temp[p]:
                 s+=len1-p
                 break
             p+=1
         q+=1
-    #完成排序，并把排序后的内容回溯给上一级做准备
     l=[]
     p,q=0,sorted_temp.index(sorted_part2[0])
     while p<len1 and q<len_all:
@@ -211,7 +205,6 @@ def MergeSort(data):
 
 def InversePairs(data):
     # write code here
-    #用归并排序，归并拼接后用计算排序时元素的index变动了少
     _,s=MergeSort(data)
     return s
 
@@ -250,6 +243,8 @@ def kendall(
     pred = pred.detach().cpu().numpy()
     return stats.kendalltau(target, pred)[0]
 
+def kendall_np(target : np.ndarray, pred : np.ndarray):
+    return stats.kendalltau(target, pred)[0]
 
 def mle_loss(target : torch.Tensor, pred : torch.Tensor) -> torch.Tensor:
     perm = torch.argsort(target)

@@ -1,0 +1,1 @@
+python main.py --model GClassifier  --dataset PlainClusterSet --batch_size 4 --device cuda:3 --label 3  --group 0 --egnn_layers 4 --pos_encode 0

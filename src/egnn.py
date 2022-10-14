@@ -167,14 +167,17 @@ class EGNN(nn.Module):
         soft_edges = False,
         coor_weights_clamp_value = None,
         act = nn.SiLU,
+        trans_equiv = True
     ):
         super().__init__()
         assert m_pool_method in {'sum', 'mean'}, 'pool method must be either sum or mean'
         assert update_feats or update_coors, 'you must update either features, coordinates, or both'
 
         self.fourier_features = fourier_features
-
+        self.trans_equiv = trans_equiv
         edge_input_dim = (fourier_features * 2) + (dim * 2) + edge_dim + 1# + 4
+        if self.trans_equiv:
+            edge_input_dim = (fourier_features * 2) + (dim * 2) + edge_dim + 1 + 4
         dropout = nn.Dropout(dropout, inplace=True) if dropout > 0 else nn.Identity()
 
         self.edge_mlp = nn.Sequential(
@@ -276,7 +279,9 @@ class EGNN(nn.Module):
 
         feats_i = rearrange(feats, 'b i d -> b i () d')
         feats_i, feats_j = broadcast_tensors(feats_i, feats_j)
-        #rel_dist = torch.cat((rel_dist, rel_coors), dim=-1)
+        # if translation equiv, add rel coors
+        if self.trans_equiv:
+            rel_dist = torch.cat((rel_dist, rel_coors), dim=-1)
         edge_input = torch.cat((feats_i, feats_j, rel_dist), dim = -1)
 
         if exists(edges):
@@ -337,75 +342,3 @@ class EGNN(nn.Module):
             node_out = feats
 
         return node_out, coors_out
-
-class EGNN_DENSE(nn.Module):
-    def __init__(
-        self,
-        dim,
-        edge_dim = 0,
-        m_dim = 16,
-        fourier_features = 0,
-        num_nearest_neighbors = 0,
-        dropout = 0.0,
-        init_eps = 1e-3,
-        norm_feats = False,
-        norm_coors = False,
-        norm_coors_scale_init = 1e-2,
-        update_feats = True,
-        update_coors = True,
-        only_sparse_neighbors = False,
-        valid_radius = float('inf'),
-        m_pool_method = 'sum',
-        soft_edges = False,
-        coor_weights_clamp_value = None,
-        act = nn.SiLU,
-    ):
-        super().__init__()
-        assert m_pool_method in {'sum', 'mean'}, 'pool method must be either sum or mean'
-        assert update_feats or update_coors, 'you must update either features, coordinates, or both'
-
-        self.fourier_features = fourier_features
-
-        edge_input_dim = (fourier_features * 2) + (dim * 2) + edge_dim + 1 + 4
-        dropout = nn.Dropout(dropout, inplace=True) if dropout > 0 else nn.Identity()
-
-        self.edge_mlp = nn.Sequential(
-            nn.Linear(edge_input_dim, edge_input_dim * 2),
-            dropout,
-            SiLU(),
-            nn.Linear(edge_input_dim * 2, m_dim),
-            SiLU()
-        )
-
-        self.edge_gate = nn.Sequential(
-            nn.Linear(m_dim, 1),
-            nn.Sigmoid()
-        ) if soft_edges else None
-
-        self.node_norm = nn.LayerNorm(dim) if norm_feats else nn.Identity()
-        self.coors_norm = CoorsNorm(scale_init = norm_coors_scale_init) if norm_coors else nn.Identity()
-
-        self.m_pool_method = m_pool_method
-
-        self.node_mlp = nn.Sequential(
-            nn.Linear(dim + m_dim, dim * 2),
-            dropout,
-            SiLU(),
-            nn.Linear(dim * 2, dim),
-        ) if update_feats else None
-
-        self.coors_mlp = nn.Sequential(
-            nn.Linear(m_dim, m_dim * 4),
-            dropout,
-            SiLU(),
-            nn.Linear(m_dim * 4, 1)
-        ) if update_coors else None
-
-        self.num_nearest_neighbors = num_nearest_neighbors
-        self.only_sparse_neighbors = only_sparse_neighbors
-        self.valid_radius = valid_radius
-
-        self.coor_weights_clamp_value = coor_weights_clamp_value
-
-        self.init_eps = init_eps
-        self.apply(self.init_)

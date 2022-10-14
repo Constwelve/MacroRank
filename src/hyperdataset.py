@@ -1,13 +1,10 @@
-from copy import deepcopy
-from itertools import combinations
+from optparse import Values
 import os.path as osp
 import pandas as pd
 import torch
 import numpy as np
-import os
 from torch_scatter import scatter
 from torch_geometric.data import Dataset, Data
-from torchvision import transforms
 import pdb
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -49,19 +46,20 @@ class PlainClusterSet(Dataset):
         self.stds = {}
         # 
         super(PlainClusterSet, self).__init__(root, transform, pre_transform)
+        # data label statics
+        self.stats = {}
+        for design in self.raw_file_names:
+            self.stats[design] = []
+        self.tot_labels = []
         # data prefech
         self.netlist = {}
         self.data = []
-        self.y = torch.load(osp.join(self.processed_dir, 'labels.pt'))
-        self.weight = torch.load(osp.join(self.processed_dir, 'weight.pt'))
-        self.lambdda = torch.load(osp.join(self.processed_dir, 'lambda.pt'))
-        self.dcg = torch.load(osp.join(self.processed_dir, 'dcg.pt'))
         self.origin = {}
         
         for design in self.raw_file_names:
             self.origin[design] = []
             self.netlist[design] = torch.load(osp.join(self.processed_dir, '{}.pt'.format(design))).to(device)
-            
+        self.preprocess_labels()
         for i in tqdm(range(len(self.processed_file_names))):
             self.data.append(self.pre_load_data(i).to(device))
 
@@ -116,8 +114,6 @@ class PlainClusterSet(Dataset):
 
 
     def process(self):
-
-        self.tot_labels = []
         i = 0
         for design in self.raw_file_names:
             # paths
@@ -154,8 +150,6 @@ class PlainClusterSet(Dataset):
             score = labels[:,3]
             mask = (rWLs != 0)
             # labels statics
-            self.stats[design] = np.stack([hpwls[mask], rWLs[mask], vias[mask], short[mask], score[mask]], axis=0)
-            self.tot_labels.append(self.stats[design])
 
             meta_data[5] = meta_data[5]/(yh-yl)
             meta_data[8] = meta_data[8]/(yh-yl)/(xh-xl)
@@ -247,57 +241,6 @@ class PlainClusterSet(Dataset):
                 torch.save(data, osp.join(self.processed_dir, 'data_{}.pt'.format(i)))
                 i += 1
 
-        self.tot_labels = np.hstack(self.tot_labels)
-        self.tot_means = torch.from_numpy(np.mean(self.tot_labels, axis=-1))
-        self.tot_maxs = torch.from_numpy(np.max(self.tot_labels, axis=-1))
-        self.tot_mins = torch.from_numpy(np.min(self.tot_labels, axis=-1))
-        self.tot_stds = torch.from_numpy(np.std(self.tot_labels, axis=-1))
-
-        self.means = {}
-        self.stds = {}
-        self.lambdda = {}
-        self.dcg = {}
-        ws = []
-
-        for design in self.raw_file_names:
-            tmp = torch.from_numpy(self.stats[design])
-            tmp = (tmp - tmp.mean(dim=-1).view(-1,1))/tmp.std(dim=-1).view(-1,1)
-            logi = torch.argsort(tmp, dim=-1)
-            logi = torch.argsort(logi, dim=-1)
-            logi = torch.log2(logi+2)
-            self.lambdda[design] = torch.softmax(-tmp, dim=-1) * tmp.shape[-1]
-            self.dcg[design] = tmp / logi
-            meann = mean_dist(self.dcg[design])
-            self.dcg[design] = self.dcg[design] / meann
-            print(design, self.dcg[design].max(), self.dcg[design].min(), self.dcg[design].std())
-        
-
-        for design in self.raw_file_names:
-            self.stats[design] = (torch.from_numpy(self.stats[design]) - self.tot_means.view(-1,1))/(self.tot_maxs.view(-1,1) - self.tot_mins.view(-1,1))
-            self.means[design] = torch.mean(self.stats[design], dim=-1)
-            self.stds[design] = torch.std(self.stats[design], dim=-1)
-            if design == 'mgc_pci_bridge32_b': 
-                self.stds[design] = self.stds['mgc_fft_a']
-            ws.append(self.stds[design].view(-1, 1))
-        
-        ws = torch.cat(ws, dim=-1)
-        ws = 1 / ws
-        mws = torch.mean(ws, dim=-1)
-        ws = ws / mws.view(-1, 1)
-
-        labes = []
-        for i, design in enumerate(self.raw_file_names):
-            self.weight[design] = ws[:, i].float()
-        
-        for i, design in enumerate(self.raw_file_names):
-            labes.append(self.stats[design])
-        
-        labes = torch.cat(labes, dim=-1).float()
-
-        torch.save(labes, osp.join(self.processed_dir, 'labels.pt'))
-        torch.save(self.weight, osp.join(self.processed_dir, 'weight.pt'))
-        torch.save(self.lambdda, osp.join(self.processed_dir, 'lambda.pt'))
-        torch.save(self.dcg, osp.join(self.processed_dir, 'dcg.pt'))
 
             
     def len(self):
@@ -352,6 +295,66 @@ class PlainClusterSet(Dataset):
         else:
             assert(False)
         return bipartdata
+
+    def preprocess_labels(self):
+        for idx in range(len(self.processed_file_names)):
+            data = torch.load(osp.join(self.processed_dir, 'data_{}.pt'.format(idx)))
+            design = data.design
+            #
+            self.stats[design].append(data.y)
+
+        for design in self.raw_file_names:
+            self.stats[design] = torch.cat(self.stats[design], dim=0).T
+            self.tot_labels.append(self.stats[design])
+        
+        self.tot_labels = torch.cat(self.tot_labels, dim=-1)
+        self.tot_means = torch.mean(self.tot_labels, dim=-1)
+        self.tot_maxs = torch.max(self.tot_labels, dim=-1).values
+        self.tot_mins = torch.min(self.tot_labels, dim=-1).values
+        self.tot_stds = torch.std(self.tot_labels, dim=-1)
+        
+        self.means = {}
+        self.stds = {}
+        self.lambdda = {}
+        self.dcg = {}
+        ws = []
+
+        for design in self.raw_file_names:
+            tmpp = self.stats[design]
+            tmp = (tmpp - tmpp.mean(dim=-1).view(-1,1))/tmpp.std(dim=-1).view(-1,1)
+            logi = torch.argsort(tmp, dim=-1)
+            logi = torch.argsort(logi, dim=-1)
+            logi = torch.log2(logi+2)
+            self.lambdda[design] = torch.softmax(-tmp, dim=-1) * tmp.shape[-1]
+            self.dcg[design] = tmp / logi
+            meann = mean_dist(self.dcg[design])
+            self.dcg[design] = self.dcg[design] / meann
+            print(design, self.dcg[design].max(), self.dcg[design].min(), self.dcg[design].std())
+        
+        self.offset = self.tot_means.view(-1)/(self.tot_maxs.view(-1) - self.tot_mins.view(-1))
+
+        for design in self.raw_file_names:
+            self.stats[design] = (self.stats[design] - self.tot_means.view(-1,1))/(self.tot_maxs.view(-1,1) - self.tot_mins.view(-1,1))
+            self.means[design] = torch.mean(self.stats[design], dim=-1)
+            self.stds[design] = torch.std(self.stats[design], dim=-1)
+            if design == 'mgc_pci_bridge32_b': 
+                self.stds[design] = self.stds['mgc_fft_a']
+            ws.append(self.stds[design].view(-1, 1))
+        
+        ws = torch.cat(ws, dim=-1)
+        ws = 1 / ws
+        mws = torch.mean(ws, dim=-1)
+        ws = ws / mws.view(-1, 1)
+
+        self.y = []
+        for i, design in enumerate(self.raw_file_names):
+            self.weight[design] = ws[:, i].float()
+        
+        for i, design in enumerate(self.raw_file_names):
+            self.y.append(self.stats[design])
+        
+        self.y = torch.cat(self.y, dim=-1).float()
+
 
     def get(self, idx):
         if self.mode == 'Classifier' or self.mode == 'RClassifier':

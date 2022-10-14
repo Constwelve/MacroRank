@@ -1,0 +1,9 @@
+data*
+log*
+save*
+*.png
+visual*
+nohup.out
+read*
+__pyache__
+*.gv

@@ -1,11 +1,10 @@
-from genericpath import exists
 import torch
 import numpy as np
 from torch_geometric.nn import global_mean_pool as gap
 from torch_geometric.nn import global_max_pool as gmp
 from torch_geometric.nn import global_add_pool as gsp
 from torch_geometric.nn import SAGPooling as Pool
-from torch_geometric.nn import SAGEConv, GATv2Conv, GINConv, ResGatedGraphConv
+from torch_geometric.nn import SAGEConv, GATv2Conv
 import torch.nn.functional as F
 import pdb
 from torch import Tensor, dropout

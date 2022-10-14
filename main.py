@@ -13,16 +13,13 @@ import pdb
 import sys
 #import swats
 from torch_scatter import scatter
-from yaml import load
-import src.datasets as datasets
 import src.hyperdataset as hdatasets
-import src.models as models
 import torch_optimizer as optim
 import src.hypermodel as hmodels
 from src.logger import Logger
 from torch_geometric.loader import DataLoader
 from torch_optimizer import swats
-from src.util import InversePairs, mle_loss, spearman, dcg_score
+from src.util import InversePairs, kendall, mle_loss, spearman, dcg_score, kendall_np
 from torch.utils.tensorboard import writer
 #from src.meta import META
 parser = argparse.ArgumentParser()
@@ -41,6 +38,7 @@ parser.add_argument('--nhid', type=int, default=16, help='hidden size')
 parser.add_argument('--layers',type=int,default=2,help='conv layers')
 parser.add_argument('--egnn_layers',type=int,default=3,help='egnn layers')
 parser.add_argument('--egnn_nhid',type=int,default=16,help='egnn layers hidden dim')
+#parser.add_argument('--rot_equiv',type=bool, default=False)
 #parser.add_argument('--pooling_ratio', type=float, default=0.1,help='pooling ratio')
 parser.add_argument('--dropout_ratio', type=float, default=0.1,help='dropout ratio')
 parser.add_argument('--group', type=int, default=0, help='which data group to use')
@@ -82,60 +80,30 @@ def set_seed(seed):
 
 def build_loss(args):
     def MAELoss(out,data):
-        if len(args.label) > 1:
-            label = torch.tensor(args.label[0]).long().to(data.device)
-            y = data.y[:, label]
-            w = data.w[:, label]
-            return F.l1_loss(out[0].view(-1) * w,y.view(-1) * w)
-        else:
-            label = args.label[0]
-            y = data.y[:, label]
-            w = data.w[:, label]
-            return F.l1_loss(out[0].view(-1) * w, y.view(-1) * w) 
+        label = args.label[0]
+        y = data.y[:, label]
+        w = data.w[:, label]
+        return F.l1_loss(out[0].view(-1) * w, y.view(-1) * w) 
     def MSELoss(out,data):
-        if len(args.label) > 1:
-            label = torch.tensor(args.label[0]).long().to(data.device)
-            y = data.y[:, label]
-            w = data.w[:, label]
-            return F.mse_loss(out[0].view(-1) * w, y.view(-1) * w)
-        else:
-            label = args.label[0]
-            y = data.y[:, label]
-            w = data.w[:, label]
-            return F.mse_loss(out[0].view(-1) * w,y.view(-1) * w)
+        label = args.label[0]
+        y = data.y[:, label]
+        w = data.w[:, label]
+        return F.mse_loss(out[0].view(-1) * w,y.view(-1) * w)
     def BCELoss(out,data):
-        if len(args.label) > 1:
-            label = torch.tensor(args.label[0]).long().to(data.device)
-            y = data.y[:, label]
-            w = data.w[:, label]
-            return F.mse_loss(out[0].view(-1) * w, y.view(-1) * w)
-        else:
-            label = args.label[0]
-            y = data.y[:, label]
-            w = data.w[:, label]
-            return F.binary_cross_entropy(target=y.view(-1), input=out[0].view(-1), weight=w)
+        label = args.label[0]
+        y = data.y[:, label]
+        w = data.w[:, label]
+        return F.binary_cross_entropy(target=y.view(-1), input=out[0].view(-1), weight=w)
     def MLELoss(out,data):
-        if len(args.label) > 1:
-            label = torch.tensor(args.label[0]).long().to(data.device)
-            y = data.y[:, label]
-            w = data.w[:, label]
-            return F.mse_loss(out[0].view(-1) * w, y.view(-1) * w)
-        else:
-            label = args.label[0]
-            y = data.y[:, label]
-            return mle_loss(y.view(-1), out[0].view(-1))
+        label = args.label[0]
+        y = data.y[:, label]
+        return mle_loss(y.view(-1), out[0].view(-1))
     def SMAELoss(out,data):
-        if len(args.label) > 1:
-            label = torch.tensor(args.label[0]).long().to(data.device)
-            y = data.y[:, label]
-            w = data.w[:, label]
-            return F.mse_loss(out[0].view(-1) * w, y.view(-1) * w)
-        else:
-            label = args.label[0]
-            y = data.y[:, label]
-            w = data.w[:, label]
-            torch.nn.HuberLoss
-            return F.smooth_l1_loss(out[0].view(-1) * w, y.view(-1) * w, beta=0.005)
+        label = args.label[0]
+        y = data.y[:, label]
+        w = data.w[:, label]
+        torch.nn.HuberLoss
+        return F.smooth_l1_loss(out[0].view(-1) * w, y.view(-1) * w, beta=0.005)
     def CMSELoss(out,data):
         y = getattr(data,args.label)
         return F.l1_loss(out[0],y,reduction='sum')
@@ -183,59 +151,6 @@ def build_loss(args):
         return COMBLoss
     else:
         print('Invalid loss function!')
-
-
-def build_acc(args):
-    def RelAcc(out, data):
-        label = args.label[0]
-        y = data.y[:, label]
-        return torch.mean(1-torch.abs((y.view(-1)-out[0].view(-1))/(y.view(-1))))
-    def CRelAcc(out, data):
-        y = getattr(data,args.label)
-        return torch.mean(1-torch.abs((y.view(-1)-out[0].view(-1))/(y.view(-1)+0.00001)))
-    def SROCC(out, data):
-        label = args.label[0]
-        y = data.y[:, label]
-        return spearman(y.view(-1), out[0].view(-1))
-    def EqAcc(out, data):
-        label = args.label[0]
-        y = data.y[:, label]
-        index = torch.arange(0, y.shape[0], 2).to(y.device)
-        y0 = torch.index_select(y, dim=0, index=index)
-        y1 = torch.index_select(y, dim=0, index=(index+1))
-        target = ((y0 - y1) >= 0).long()
-        return torch.eq(torch.argmax(out[0],dim=1).view(-1), target.view(-1)).float().mean()
-    def BEQAcc(out, data):
-        label = args.label[0]
-        y = data.y[:, label]
-        mask1, mask5, mask0 = (out[0] > 0.5), (out[0] == 0.5), (out[0] < 0.5)
-        mask = 1. * mask1 + 0.5 * mask5
-        return torch.eq(mask.view(-1), y.view(-1)).float().mean()
-    def COMBAcc(out, data):
-        label = args.label[0]
-        y1 = data.y1[:, label]
-        y2 = data.y2[:, label]
-        y = torch.cat((y1,y2))
-        index = torch.arange(0, out[0].shape[0], 2).to(y.device)
-        out1 = torch.index_select(out[0], dim=0, index=index)
-        out2 = torch.index_select(out[0], dim=0, index=(index+1))
-        out = torch.cat((out1, out2))
-        return torch.mean(1-torch.abs((y.view(-1)-out.view(-1))/(y.view(-1))))
-    if args.acc == 'rel':
-        return RelAcc
-    elif args.acc == 'SROCC':
-        return SROCC
-    elif args.acc == 'Crel':
-        return CRelAcc
-    elif args.acc == 'eq':
-        return EqAcc
-    elif args.acc == 'BEQ':
-        return BEQAcc
-    elif args.acc == 'COMB':
-        return COMBAcc
-    else:
-        print('Invalid acc function!')
-        assert(False)
 
 
 def build_loader(design,train_ratio=0.8):
@@ -346,6 +261,59 @@ set_seed(args.seed)
 best_model_path, last_model_path, logger = build_log()
 print('loading dataset ...')
 dataset, train_loader, test_loader = build_loader(args.design, args.train_ratio)
+
+def build_acc(args):
+    def RelAcc(out, data):
+        label = args.label[0]
+        y = data.y[:, label]
+        return torch.mean(1-torch.abs((y.view(-1)-out[0].view(-1))/(float(dataset.offset[label]) + y.view(-1))))
+    def CRelAcc(out, data):
+        y = getattr(data,args.label)
+        return torch.mean(1-torch.abs((y.view(-1)-out[0].view(-1))/(y.view(-1)+0.00001)))
+    def SROCC(out, data):
+        label = args.label[0]
+        y = data.y[:, label]
+        return spearman(y.view(-1), out[0].view(-1))
+    def EqAcc(out, data):
+        label = args.label[0]
+        y = data.y[:, label]
+        index = torch.arange(0, y.shape[0], 2).to(y.device)
+        y0 = torch.index_select(y, dim=0, index=index)
+        y1 = torch.index_select(y, dim=0, index=(index+1))
+        target = ((y0 - y1) >= 0).long()
+        return torch.eq(torch.argmax(out[0],dim=1).view(-1), target.view(-1)).float().mean()
+    def BEQAcc(out, data):
+        label = args.label[0]
+        y = data.y[:, label]
+        mask1, mask5, mask0 = (out[0] > 0.5), (out[0] == 0.5), (out[0] < 0.5)
+        mask = 1. * mask1 + 0.5 * mask5
+        return torch.eq(mask.view(-1), y.view(-1)).float().mean()
+    def COMBAcc(out, data):
+        label = args.label[0]
+        y1 = data.y1[:, label]
+        y2 = data.y2[:, label]
+        y = torch.cat((y1,y2))
+        index = torch.arange(0, out[0].shape[0], 2).to(y.device)
+        out1 = torch.index_select(out[0], dim=0, index=index)
+        out2 = torch.index_select(out[0], dim=0, index=(index+1))
+        out = torch.cat((out1, out2))
+        return torch.mean(1-torch.abs((y.view(-1)-out.view(-1))/(y.view(-1))))
+    if args.acc == 'rel':
+        return RelAcc
+    elif args.acc == 'SROCC':
+        return SROCC
+    elif args.acc == 'Crel':
+        return CRelAcc
+    elif args.acc == 'eq':
+        return EqAcc
+    elif args.acc == 'BEQ':
+        return BEQAcc
+    elif args.acc == 'COMB':
+        return COMBAcc
+    else:
+        print('Invalid acc function!')
+        assert(False)
+
 model, optimizer, schedule = build_model()
 criterion = build_loss(args)
 accuracy = build_acc(args)
@@ -357,38 +325,28 @@ min_train_loss = 1e10
 min_err = 1e10
 patience = 0
 
-def test(model,loader):
+def test(model, loader):
     with torch.no_grad():
         model.eval()
-        lenth = len(loader)# if epoch % 5 == 0 else int(len(loader)/5)
-        maes = []
-        accs = []
-        ipes = []
-        for i,label in enumerate(args.label):
-            correct = 0.
-            loss = 0.
-            reals = []
-            preds = []
-            for i, data in enumerate(loader):
-                if i >= lenth : break
-                data = data.to(args.device)
-                out = model(data).view(-1)
-                y = data.y[:, label].view(-1)
+        #lenth = len(loader)# if epoch % 5 == 0 else int(len(loader)/5)
+        label = args.label[0]
+        offset = float(dataset.offset[label])
+        reals = []
+        preds = []
+        for i, data in enumerate(loader):
+            data = data.to(args.device)
+            out = model(data).view(-1)
+            preds.extend(out.detach().cpu().numpy().tolist())
+            reals.extend(data.y[:, label].cpu().numpy().tolist())
+        # rank loss
+        preds = np.array(preds)
+        reals =  np.array(reals)
+        absolute_err = np.abs(preds - reals)
+        relative_err = absolute_err / (reals + offset)
 
-                preds.extend(out.detach().cpu().numpy().tolist())
-                reals.extend(data.y[:, label].cpu().numpy().tolist())
-                
-                correct += torch.mean(torch.abs((y-out)/y)).item()
-                loss += F.l1_loss(out, y).item()
-            # rank loss
-            Rp = np.argsort(preds)
-            Rr = np.argsort(np.array(reals)[Rp])
-            rankacc = InversePairs(Rr.tolist()) / (len(reals)**2 - len(reals)) * 2
-            #print('[{}]MAE=\t{:4f}\tMRE={:4f}\tIPE={:4f}'.format(label,loss/len(loader),correct/len(loader),rankacc),end='\t')
-            maes.append(loss/lenth)
-            accs.append(correct/lenth)
-            ipes.append(rankacc)
-    return np.mean(maes), np.mean(accs), np.mean(ipes)
+        ktau = kendall_np(target=reals, pred = preds)
+
+    return relative_err.mean(), ktau
 
 
 def test_class(model,loader):
@@ -396,26 +354,20 @@ def test_class(model,loader):
     dataset.mode = 'CNN'
     with torch.no_grad():
         model.eval()
-        lenth = len(loader)# if epoch % 5 == 0 else int(len(loader)/5)
-        for i,label in enumerate(args.label):
-            reals = []
-            preds = []
-            for i, data in enumerate(loader):
-                if i >= lenth : break
-                data = data.to(args.device)
-                out = model.predict(data).view(-1)
-                preds.extend(out.view(-1).detach().cpu().numpy().tolist())
-                reals.extend(data.y[:, label].cpu().numpy().tolist())
-
-            # rank loss
-            reals = np.array(reals)
-            preds = np.array(preds)
-            Rp = np.argsort(preds)
-            Rr = np.argsort(np.array(reals)[Rp])
-            rankacc = InversePairs(Rr.tolist()) / (len(reals)**2 - len(reals)) * 2
-            dcg_s = dcg_score(input=preds, target=reals)
+        lenth = len(loader)
+        label = args.label[0]
+        preds = []
+        reals = []
+        for i, data in enumerate(loader):
+            if i >= lenth : break
+            data = data.to(args.device)
+            out = model.predict(data).view(-1)
+            preds.extend(out.view(-1).detach().cpu().numpy().tolist())
+            reals.extend(data.y[:, label].cpu().numpy().tolist())
+        # rank loss
+        ktau = kendall_np(target=np.array(reals), pred = np.array(preds))
     dataset.mode = tmp_mode
-    return 0, dcg_s, rankacc
+    return 0, ktau
 
 
 def test_design(model,design, test_loader):
@@ -430,8 +382,8 @@ if args.goon:
     if args.con:
         optimizer.load_state_dict(checkp['optimizer'])
 
-minn_loss = 10000
-minn_errr = 10000
+minn_mres = 10000
+maxx_ktau = -10
 
 for epoch in range(start, args.epochs):
     model.train()
@@ -454,47 +406,45 @@ for epoch in range(start, args.epochs):
             
     if optimizer.param_groups[0]['lr'] > args.lr / 100:
         schedule.step()
-    val_losses = []
-    rank_errs = []
+    mres = []
+    ktaus = []
     print("[Epoch\t{}]\tTrain loss:\t{:.4f}\tTrain acc:\t{:.4f}".format(
             epoch, Ave_loss / len(train_loader) * args.batch_step, 
             Ave_cor / len(train_loader)), flush=True,end='\t')
         
     for design in test_designs:
-        _, val_loss, rank_err = test_design(model, design, test_loader)
-        val_losses.append(val_loss)
-        rank_errs.append(rank_err)
+        mre, ktau = test_design(model, design, test_loader)
+        mres.append(mre)
+        ktaus.append(ktau)
     
-    mean_val_loss = np.mean(val_losses)
-    mean_rank_err = np.mean(rank_errs)
+    mean_mres = np.mean(mres)
+    mean_ktau = np.mean(ktaus)
 
-    print("{} mre:\t{:.4f}\t{} ipe:\t{:.4f}\tTime:{:.2f}\tlr:{:.5f}".format(
-            'Test',
-            mean_val_loss, 
-            'Test',
-            mean_rank_err,
-            time.time() - tt, 
-            optimizer.param_groups[0]['lr']))
+    print("{} mre:\t{:.4f}\t{} ktau:\t{:.4f}\tTime:{:.2f}\tlr:{:.5f}".format(
+            'Test', mean_mres,  'Test', mean_ktau,
+            time.time() - tt, optimizer.param_groups[0]['lr']), flush=True,end=' ')
     
     logger.add_scalar('train loss', Ave_loss / len(train_loader), i)
     logger.add_scalar('train acc', Ave_cor / len(train_loader), i)
-    logger.add_scalar('test mre', mean_val_loss, i)
-    logger.add_scalar('test rank err', mean_rank_err, i)
+    logger.add_scalar('test mre', mean_mres, i)
+    logger.add_scalar('test ktau', mean_ktau, i)
 
 
-    if mean_val_loss < minn_loss:
-        minn_loss = mean_val_loss
-        state = {'model': model.state_dict(), 'epoch': epoch , 'val_loss' : mean_val_loss, 'rank_err' : mean_rank_err}
-        print('model saved {} {}'.format(mean_val_loss, mean_rank_err))
-        torch.save(state, best_model_path + '.loss')
+    if mean_mres < minn_mres:
+        minn_mres = mean_mres
+        state = {'model': model.state_dict(), 'val_loss' : mean_mres, 'rank_err' : mean_ktau}
+        print('*',end='')
+        torch.save(state, best_model_path + '.mre')
 
 
-    if mean_rank_err < minn_errr:
-        minn_errr = mean_rank_err
-        state = {'model': model.state_dict(), 'epoch': epoch , 'val_loss' : mean_val_loss, 'rank_err' : mean_rank_err}
-        print('model saved {} {}'.format(mean_val_loss, mean_rank_err))
-        torch.save(state, best_model_path + '.err')
+    if mean_ktau > maxx_ktau:
+        maxx_ktau = mean_ktau 
+        state = {'model': model.state_dict(), 'val_loss' : mean_mres, 'rank_err' : mean_ktau }
+        print('@',end='')
+        torch.save(state, best_model_path + '.ktau')
 
-state = {'model': model.state_dict(), 'val_loss' : mean_val_loss, 'rank_err' : mean_rank_err}
+    print()
+
+state = {'model': model.state_dict(), 'val_loss' : mean_mres, 'rank_err' : mean_ktau}
 torch.save(state, last_model_path)
 
